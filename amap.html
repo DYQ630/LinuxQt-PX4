@@ -1,0 +1,611 @@
+<!-- 
+  @file amap.html
+  @brief 基于高德地图 JS API 的卫星地图实时定位页面
+  @details 本页面嵌入在 Qt WebEngineView 中，实现以下功能：
+           - 显示高德卫星地图 + 路网图层
+           - 支持实时位置更新（C++ 通过 runJavaScript 调用）
+           - 支持拖动/缩放/双击恢复跟随等交互（参考高德/百度地图行为）
+           - 用户拖动地图后自动停止跟随，双击恢复跟随
+           - 双重安全网机制（2秒+5秒）确保地图就绪
+-->
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no, width=device-width">
+    <title>高德卫星地图实时定位</title>
+    <style>
+        html, body, #container {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background: #0a1628;
+            font-family: -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+            -webkit-user-select: none;    /* 禁止文本选中，避免拖拽时选中文字 */
+            user-select: none;
+            -webkit-user-drag: none;        /* 禁止原生拖拽（关键！防止地图像图片一样被拖出来） */
+        }
+        /* 所有元素禁止原生拖拽 */
+        *, *::before, *::after {
+            -webkit-user-drag: none;
+            user-select: none;
+        }
+
+        /* ============ 图层切换控件 ============ */
+        #layer-control {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            z-index: 999;
+            background: rgba(10, 22, 40, 0.85);
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            border-radius: 8px;
+            padding: 8px 10px;
+            color: #fff;
+            font-size: 12px;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+            min-width: 120px;
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+        }
+        #layer-control .lc-title {
+            font-size: 11px;
+            color: #00ffff;
+            margin-bottom: 6px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid rgba(0, 255, 255, 0.2);
+            letter-spacing: 1px;
+        }
+        #layer-control .lc-item {
+            display: flex;
+            align-items: center;
+            padding: 4px 0;
+            cursor: pointer;
+        }
+        #layer-control .lc-item:hover { color: #00ffff; }
+        #layer-control .lc-radio {
+            width: 14px;
+            height: 14px;
+            border: 2px solid #00ffff;
+            border-radius: 50%;
+            margin-right: 8px;
+            position: relative;
+            flex-shrink: 0;
+            box-sizing: border-box;
+        }
+        #layer-control .lc-item.active .lc-radio::after {
+            content: '';
+            position: absolute;
+            top: 2px; left: 2px;
+            width: 6px; height: 6px;
+            background: #00ffff;
+            border-radius: 50%;
+        }
+        #layer-control .lc-checkbox {
+            width: 14px;
+            height: 14px;
+            border: 2px solid #00ffff;
+            border-radius: 3px;
+            margin-right: 8px;
+            position: relative;
+            flex-shrink: 0;
+            box-sizing: border-box;
+        }
+        #layer-control .lc-item.active .lc-checkbox::after {
+            content: '';
+            position: absolute;
+            top: 1px; left: 4px;
+            width: 4px; height: 8px;
+            border: solid #00ffff;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+
+    <!-- 图层切换控件（默认隐藏，仅当 URL 带 ?layerControl=1 时显示，供地图弹窗使用） -->
+    <div id="layer-control" style="display:none;">
+        <div class="lc-title">图层</div>
+        <div class="lc-item active" data-base="satellite">
+            <span class="lc-radio"></span><span>卫星影像</span>
+        </div>
+        <div class="lc-item" data-base="standard">
+            <span class="lc-radio"></span><span>标准地图</span>
+        </div>
+        <div class="lc-item active" data-overlay="road" style="margin-top:4px;border-top:1px solid rgba(0,255,255,0.15);padding-top:6px;">
+            <span class="lc-checkbox"></span><span>路网叠加</span>
+        </div>
+    </div>
+    <script>
+        // ============ 调试辅助工具（仅控制台输出，不显示UI） ============
+        function _log(msg) {
+            var now = new Date().toLocaleTimeString();
+            console.log('[AMap] ' + '[' + now + '] ' + msg);  // 仅输出到浏览器控制台，便于Qt端查看
+        }
+
+        // ============ 全局状态变量 ============
+        var mapReady = false;               // 地图是否已就绪（高德API加载完成）
+        var map = null;                     // 高德地图实例
+        var marker = null;                  // 当前位置标记（蓝色圆点）
+        var circle = null;                  // 位置精度圆圈（青色半透明圆）
+        var startMarker = null;             // 路线起点标记
+        var endMarker = null;               // 路线终点标记
+        var currentZoom = 17;               // 当前缩放级别（卫星地图默认17级较清晰）
+        var followMode = false;              // 跟随模式：true=自动跟随当前位置，false=停止跟随（默认不跟随，双击启动）
+        var isUserInteracting = false;      // 用户是否正在交互中（拖动/缩放进行时）
+        var hasCenteredToPosition = false;   // 是否已完成首次定位居中（打开地图时的初始定位）
+
+        // 图层实例与状态（用于图层切换控制）
+        var baseLayerSatellite = null;       // 卫星影像基础图层
+        var baseLayerStandard = null;        // 标准矢量基础图层
+        var roadLayer = null;                // 路网叠加图层
+        var currentBase = 'satellite';      // 当前基础图层：'satellite' | 'standard'
+        var roadOverlayEnabled = true;       // 路网叠加是否开启
+
+        /**
+         * @brief 更新跟随状态指示器的显示（已移除UI显示，此函数保留以兼容逻辑调用）
+         */
+        function updateFollowIndicator() {
+            // UI元素已移除，仅保留日志记录
+            _log('跟随状态更新: ' + (followMode ? '跟随中' : '已暂停'));
+        }
+
+        // ============ 立即注册所有 window API ============
+        // 提前注册所有 C++ 可能调用的 JS 函数，避免 API 未定义错误
+        window.isMapReady = function() { return mapReady; };
+        window.isFollowing = function() { return followMode; };
+        window._getDebugLogs = function() { return _logs.join('\n'); };
+
+        // 位置去重：记录上次更新的位置，避免频繁的 marker/DOM 更新
+        var lastUpdateLon = 0;
+        var lastUpdateLat = 0;
+        var minUpdateDiff = 0.00001;  // 经纬度变化小于此值时跳过非必要更新（约1米精度）
+        var updateCounter = 0;       // 更新计数器，用于限流日志
+
+        /**
+         * @brief 设置地图位置（C++ 通过 runJavaScript 调用此函数）
+         * @param lon 经度
+         * @param lat 纬度
+         * @return 'ok' 成功 | 'pending' 地图未就绪 | 'error: ...' 出错
+         * @details 核心逻辑：
+         *          1. 地图未就绪时缓存坐标，返回 pending，待就绪后自动应用
+         *          2. 跟随模式下且用户未交互时，地图中心跟随移动
+         *          3. 暂停跟随时只更新标记位置，不移动地图中心
+         *          4. 用户交互中（拖动/缩放）时跳过地图移动
+         *          5. 位置变化极小时跳过 marker/DOM 更新以提升性能
+         */
+        window.setPosition = function(lon, lat, forceCenter) {
+            // 地图未就绪时缓存坐标，稍后应用
+            if (!mapReady || !map) {
+                window._pendingLon = lon;
+                window._pendingLat = lat;
+                return 'pending';
+            }
+            try {
+                var lngLat = new AMap.LngLat(lon, lat);
+                var moved = false;  // 本次是否移动了地图中心
+
+                // 核心跟随逻辑：根据用户交互状态决定是否移动地图中心
+                if (forceCenter) {
+                    // C++ 强制居中：GPS/IP 定位成功获取真实位置时调用，
+                    // 无论当前状态如何，强制将地图中心定位到真实位置
+                    hasCenteredToPosition = true;
+                    map.setZoomAndCenter(currentZoom, lngLat);
+                    moved = true;
+                } else if (followMode && !isUserInteracting) {
+                    // 跟随模式 + 用户未交互 → 地图中心跟随移动
+                    map.setZoomAndCenter(currentZoom, lngLat);
+                    moved = true;
+                } else if (!followMode && !hasCenteredToPosition) {
+                    // 未跟随 + 尚未首次居中 → 打开地图时的初始定位，居中到当前位置
+                    map.setZoomAndCenter(currentZoom, lngLat);
+                    hasCenteredToPosition = true;
+                    moved = true;
+                }
+                // 其余情况（暂停跟随/用户交互中）→ 不移动地图中心
+
+                // 位置变化去重：仅当位置变化超过阈值时更新 marker
+                var changed = Math.abs(lon - lastUpdateLon) > minUpdateDiff || Math.abs(lat - lastUpdateLat) > minUpdateDiff;
+                if (changed) {
+                    lastUpdateLon = lon;
+                    lastUpdateLat = lat;
+
+                    // 更新标记和圆圈位置
+                    if (marker) marker.setPosition(lngLat);
+                    if (circle) circle.setCenter(lngLat);
+                }
+
+                // 限流日志：每5次更新才输出1次详细日志
+                updateCounter++;
+                if (updateCounter % 5 === 0) {
+                    var mode = followMode ? (isUserInteracting ? '跟随中(交互)' : '跟随模式') :
+                               (hasCenteredToPosition ? '暂停跟随' : '首次居中');
+                    _log('setPosition [' + mode + '] ' + lon.toFixed(6) + ',' + lat.toFixed(6) +
+                         (moved ? ' [地图已移动]' : '') + (changed ? ' [标记已更新]' : ' [位置微小变化跳过]'));
+                }
+
+                return 'ok';
+            } catch (e) {
+                _log('setPosition error: ' + e.message);
+                return 'error: ' + e.message;
+            }
+        };
+
+        window.clearRouteMarkers = function() {
+            try {
+                if (startMarker && map) { map.remove(startMarker); startMarker = null; }
+                if (endMarker && map) { map.remove(endMarker); endMarker = null; }
+                return 'ok';
+            } catch (e) { _log('clearRouteMarkers error: ' + e.message); return 'error'; }
+        };
+
+        window.addRouteMarkers = function(startLon, startLat, endLon, endLat) {
+            if (!mapReady || !map) return 'pending';
+            try {
+                window.clearRouteMarkers();
+                // 将主位置标记（蓝色圆点）和精度圆圈同步到起点位置，
+                // 确保路线模式下当前位置标记也显示在地图视图内
+                // （否则 marker 仍停留在初始默认坐标，setFitView 后不在视图范围内）
+                var startLngLat = new AMap.LngLat(startLon, startLat);
+                if (marker) marker.setPosition(startLngLat);
+                if (circle) circle.setCenter(startLngLat);
+                startMarker = new AMap.Marker({
+                    position: [startLon, startLat],
+                    map: map,
+                    anchor: 'bottom-center',
+                    content: '<div style="padding:2px 6px;background:#1677ff;color:#fff;border-radius:4px;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.3);font-size:12px;font-weight:bold;">A</div>'
+                });
+                endMarker = new AMap.Marker({
+                    position: [endLon, endLat],
+                    map: map,
+                    anchor: 'bottom-center',
+                    content: '<div style="padding:2px 6px;background:#f53f3f;color:#fff;border-radius:4px;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.3);font-size:12px;font-weight:bold;">B</div>'
+                });
+                map.setFitView([startMarker, endMarker], true, [60, 60, 60, 60]);
+                followMode = false;  // 路线规划模式下停止跟随
+                updateFollowIndicator();
+                _log('addRouteMarkers ok, followMode=false');
+                return 'ok';
+            } catch (e) { _log('addRouteMarkers error: ' + e.message); return 'error: ' + e.message; }
+        };
+
+        window.startLocate = function() {
+            _log('startLocate triggered');
+        };
+        window.toggleDebug = function() {
+            if (_debugEl) _debugEl.style.display = (_debugEl.style.display === 'none' ? 'block' : 'none');
+        };
+        window.setZoom = function(level) {
+            currentZoom = level;
+            if (map && mapReady) map.setZoom(level);
+        };
+
+        /**
+         * @brief 设置状态提示文字（C++ 通过 runJavaScript 调用）
+         * @details 状态文字现在仅通过 C++ 端日志输出和地图元素标记实现，
+         *          不再在地图 UI 上显示覆盖层。此函数保留以兼容 C++ 调用。
+         * @param msg 状态文字
+         * @return 'ok'
+         */
+        window.setStatus = function(msg) {
+            _log('状态更新: ' + (msg || '默认'));
+            return 'ok';
+        };
+
+        // ============ 动态加载高德地图 JS API ============
+        // 仅加载核心地图插件，不再需要工具栏/比例尺/图层切换
+        _log('开始加载高德地图 API...');
+        var script = document.createElement('script');
+        script.src = 'https://webapi.amap.com/maps?v=2.0&key=YOUR_AMAP_KEY';
+        script.onload = function() {
+            _log('AMap脚本加载成功，开始初始化地图');
+            initMap();  // API 加载完成后立即初始化地图
+        };
+        script.onerror = function() {
+            _log('AMap脚本加载失败！请检查网络连接');
+            mapReady = true;  // 标记就绪，避免C++端无限重试
+        };
+        document.head.appendChild(script);
+
+        // ============ 地图初始化函数 ============
+        /**
+         * @brief 初始化高德地图实例
+         * @details 创建卫星地图 + 路网图层，设置位置标记和精度圆圈，
+         *          注册用户交互事件监听（拖动/缩放/双击），
+         *          设置双重安全网机制确保地图就绪
+         */
+        function initMap() {
+            try {
+                _log('创建 AMap.Map ...');
+
+                // 检查容器尺寸是否就绪（Qt WebEngineView 布局可能延迟）
+                var container = document.getElementById('container');
+                if (container.offsetWidth === 0 || container.offsetHeight === 0) {
+                    _log('容器尺寸异常，等待布局完成...');
+                    setTimeout(function() { initMap(); }, 200);  // 200ms 后重试
+                    return;
+                }
+
+                // 创建图层实例（保存引用以便切换控制）
+                baseLayerSatellite = new AMap.TileLayer.Satellite();   // 卫星影像图层
+                baseLayerStandard = new AMap.TileLayer();             // 标准矢量图层
+                roadLayer = new AMap.TileLayer.RoadNet();             // 路网叠加图层
+
+                // 创建地图实例：默认卫星图层 + 路网图层（参考高德地图卫星模式）
+                map = new AMap.Map('container', {
+                    resizeEnable: true,                                    // 自动响应容器大小变化
+                    zoom: currentZoom,                                     // 初始缩放级别
+                    center: [104.0668, 30.5728],                          // 初始中心（成都附近）
+                    viewMode: '2D',                                        // 2D 视角
+                    doubleClickZoom: false,                                // 禁用双击缩放（由我们自定义双击行为）
+                    animateEnable: false,                                  // 禁用动画，减少卡顿
+                    features: ['bg', 'road', 'building', 'point'],        // 简化地图要素
+                    layers: [
+                        baseLayerSatellite,                                // 卫星影像图层（默认显示）
+                        roadLayer                                          // 路网图层叠加（默认显示）
+                    ]
+                });
+
+                // 将标准图层也添加到地图实例（但默认隐藏），以便后续切换显示
+                baseLayerStandard.setMap(map);
+                baseLayerStandard.hide();
+
+                _log('AMap.Map 创建完成');
+
+                // 初始化图层切换控件事件绑定
+                initLayerControl();
+
+                // 创建当前位置标记（蓝色圆形标记，带白色边框和阴影）
+                marker = new AMap.Marker({
+                    position: [104.0668, 30.5728],
+                    map: map,
+                    anchor: 'center',
+                    offset: new AMap.Pixel(0, 0),
+                    content: '<div style="width:22px;height:22px;background:#1677ff;border:3px solid #fff;border-radius:50%;box-shadow:0 0 0 2px rgba(22,119,255,.4),0 2px 8px rgba(0,0,0,.4);"></div>',
+                    zIndex: 200
+                });
+
+                // 创建位置精度圆圈（青色半透明圆圈表示位置精度范围）
+                circle = new AMap.Circle({
+                    center: [104.0668, 30.5728],
+                    radius: 50,                                            // 半径50米
+                    strokeColor: '#00ffff',
+                    strokeOpacity: 0.9,
+                    strokeWeight: 2,
+                    fillColor: '#00ffff',
+                    fillOpacity: 0.18,
+                    map: map,
+                    zIndex: 150
+                });
+
+                // 注意：不再添加任何地图控件（工具栏、比例尺、图层切换），保持地图显示纯净
+
+                // ============ 用户交互事件监听（核心功能） ============
+                // 参考高德/百度地图的交互逻辑：
+                // - 拖动或缩放开始 → 标记 isUserInteracting = true
+                // - 拖动结束 → 停止跟随模式（用户主动移动了地图）
+                // - 双击 → 恢复跟随模式并回到标记位置
+
+                // 拖动/缩放开始：标记用户正在交互 + 启动安全超时
+                var interactSafetyTimer = null;
+                function startInteraction() {
+                    isUserInteracting = true;
+                    // 安全超时：如果超过3秒没有收到结束事件（如鼠标在地图外释放），自动重置
+                    if (interactSafetyTimer) clearTimeout(interactSafetyTimer);
+                    interactSafetyTimer = setTimeout(function() {
+                        if (isUserInteracting) {
+                            isUserInteracting = false;
+                            _log('交互安全超时：强制重置 isUserInteracting');
+                        }
+                    }, 3000);
+                }
+                function endInteraction() {
+                    if (interactSafetyTimer) {
+                        clearTimeout(interactSafetyTimer);
+                        interactSafetyTimer = null;
+                    }
+                    isUserInteracting = false;
+                }
+
+                map.on('dragstart', function() {
+                    startInteraction();
+                    _log('用户开始拖动地图');
+                });
+                map.on('zoomstart', function() {
+                    startInteraction();
+                    _log('用户开始缩放地图');
+                });
+
+                // 拖动/缩放结束：退出交互状态
+                map.on('dragend', function() {
+                    endInteraction();
+                    // 关键：用户拖动后自动停止跟随（与高德/百度地图行为一致）
+                    followMode = false;
+                    updateFollowIndicator();
+                    _log('用户拖动结束，停止跟随');
+                });
+                map.on('zoomend', function() {
+                    endInteraction();
+                    // 用户缩放（滚轮/按钮）后也停止跟随，与拖动行为一致
+                    followMode = false;
+                    updateFollowIndicator();
+                    _log('用户缩放结束，停止跟随');
+                });
+
+                // 双击：恢复跟随模式并回到当前位置标记
+                // 这是用户重新激活自动跟随的唯一方式
+                map.on('dblclick', function(e) {
+                    followMode = true;
+                    updateFollowIndicator();
+                    _log('双击恢复跟随模式');
+                    // 路线模式下优先回到起点标记（A标记，代表飞行器当前位置）；
+                    // 普通模式下回到当前位置标记 marker。
+                    // 避免 marker 仍停留在初始默认坐标导致双击回到固定点而非当前位置
+                    var targetPos = null;
+                    if (startMarker) {
+                        targetPos = startMarker.getPosition();  // 路线模式：回到起点（当前位置）
+                    } else if (marker) {
+                        targetPos = marker.getPosition();       // 普通模式：回到当前位置标记
+                    }
+                    if (targetPos) {
+                        map.setZoomAndCenter(currentZoom, targetPos);  // 地图回到目标位置
+                        _log('双击后回到位置: ' + targetPos);
+                    }
+                });
+
+                // 单击：不改变跟随状态（仅拖动才会停止跟随）
+                map.on('click', function() {
+                    // 保持当前 followMode 不变
+                });
+
+                // 地图渲染完成事件
+                map.on('complete', function() {
+                    _log('complete 事件触发');
+                    // 延迟 300ms 后标记就绪，确保地图完全可用
+                    setTimeout(function() {
+                        mapReady = true;
+                        _log('地图已就绪');
+                        updateFollowIndicator();
+
+                        // 应用缓存在 _pendingLon/_pendingLat 中的位置
+                        if (window._pendingLon !== undefined && window._pendingLat !== undefined) {
+                            var lon = window._pendingLon;
+                            var lat = window._pendingLat;
+                            delete window._pendingLon;
+                            delete window._pendingLat;
+                            _log('应用缓存位置: ' + lon + ',' + lat);
+                            window.setPosition(lon, lat);
+                        }
+                    }, 300);
+                });
+
+                // ============ 双重安全网机制 ============
+                // 安全网1：2秒后如果地图还未就绪，强制标记就绪
+                // 防止 complete 事件未触发导致 C++ 端无限重试
+                setTimeout(function() {
+                    if (!mapReady && map && typeof map.setZoomAndCenter === 'function') {
+                        _log('2秒安全网：提前标记就绪');
+                        mapReady = true;
+                        if (window._pendingLon !== undefined && window._pendingLat !== undefined) {
+                            window.setPosition(window._pendingLon, window._pendingLat);
+                        }
+                    }
+                }, 2000);
+
+                // 安全网2：5秒后强制标记就绪（兜底机制）
+                // 即使 2秒安全网 也失败，5秒后仍然强制就绪
+                setTimeout(function() {
+                    if (!mapReady && map) {
+                        _log('5秒安全网：强制标记就绪');
+                        mapReady = true;
+                        if (window._pendingLon !== undefined && window._pendingLat !== undefined) {
+                            window.setPosition(window._pendingLon, window._pendingLat);
+                        }
+                    }
+                }, 5000);
+
+            } catch (e) {
+                _log('initMap error: ' + e.message);
+                mapReady = true;  // 出错也标记就绪，避免死循环
+            }
+        }
+
+        // 窗口大小变化时通知地图重新布局
+        window.addEventListener('resize', function() {
+            if (map) map.resize();
+        });
+
+        // C++ 可调用的强制 resize 接口（用于窗口显示后强制刷新地图）
+        window._forceResize = function() {
+            if (map) {
+                map.resize();
+                _log('地图已强制 resize');
+            }
+        };
+
+        // ============ 图层切换控制 ============
+        /**
+         * @brief 切换基础图层（卫星/标准）
+         * @param type 'satellite' | 'standard'
+         */
+        function switchBaseLayer(type) {
+            if (!map || !baseLayerSatellite || !baseLayerStandard) return;
+            if (type === currentBase) return;
+            if (type === 'satellite') {
+                baseLayerStandard.hide();
+                baseLayerSatellite.show();
+                currentBase = 'satellite';
+            } else {
+                baseLayerSatellite.hide();
+                baseLayerStandard.show();
+                currentBase = 'standard';
+            }
+            _log('基础图层切换为: ' + (type === 'satellite' ? '卫星影像' : '标准地图'));
+        }
+
+        /**
+         * @brief 切换路网叠加图层
+         */
+        function toggleRoadOverlay() {
+            if (!map || !roadLayer) return;
+            roadOverlayEnabled = !roadOverlayEnabled;
+            if (roadOverlayEnabled) roadLayer.show();
+            else roadLayer.hide();
+            _log('路网叠加: ' + (roadOverlayEnabled ? '开启' : '关闭'));
+        }
+
+        /**
+         * @brief 初始化图层切换控件的事件绑定
+         */
+        function initLayerControl() {
+            var control = document.getElementById('layer-control');
+            if (!control) return;
+
+            // 仅当 URL 带 ?layerControl=1 参数时显示控件（供地图弹窗 MapDialog 使用）
+            // 主界面位置信息框的地图不显示此控件
+            var params = new URLSearchParams(window.location.search);
+            if (params.get('layerControl') === '1') {
+                control.style.display = 'block';
+                _log('图层切换控件已显示');
+            }
+
+            var items = control.querySelectorAll('.lc-item');
+            items.forEach(function(item) {
+                item.addEventListener('click', function(e) {
+                    e.stopPropagation();  // 阻止事件冒泡到地图（避免触发地图点击）
+                    if (item.dataset.base) {
+                        // 基础图层切换（单选）
+                        items.forEach(function(other) {
+                            if (other.dataset.base) other.classList.remove('active');
+                        });
+                        item.classList.add('active');
+                        switchBaseLayer(item.dataset.base);
+                    } else if (item.dataset.overlay === 'road') {
+                        // 路网叠加切换（复选框）
+                        item.classList.toggle('active');
+                        // 同步状态变量
+                        roadOverlayEnabled = item.classList.contains('active');
+                        if (roadOverlayEnabled) roadLayer && roadLayer.show();
+                        else roadLayer && roadLayer.hide();
+                        _log('路网叠加: ' + (roadOverlayEnabled ? '开启' : '关闭'));
+                    }
+                });
+            });
+            _log('图层切换控件已初始化');
+        }
+
+        // C++ 可调用的重置跟随状态接口（用于每次打开地图时重置）
+        window._resetFollowState = function() {
+            hasCenteredToPosition = false;
+            lastUpdateLon = 0;
+            lastUpdateLat = 0;
+            updateCounter = 0;
+            _log('跟随状态已重置，下次定位将居中');
+        };
+    </script>
+</body>
+</html>

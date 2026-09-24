@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>飞行数据项目使用流程图</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
+            background: linear-gradient(135deg, #0a1628 0%, #1a3a5e 50%, #0d2137 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+            color: #88ffff;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 28px;
+            font-weight: bold;
+            color: #aaffff;
+            text-shadow: 0 0 20px rgba(136, 255, 255, 0.5);
+            margin-bottom: 40px;
+            letter-spacing: 4px;
+        }
+
+        .flowchart {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+
+        .flow-row {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .flow-node {
+            background: rgba(26, 74, 94, 0.85);
+            border: 2px solid #44aacc;
+            border-radius: 12px;
+            padding: 16px 24px;
+            min-width: 180px;
+            text-align: center;
+            position: relative;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 180, 255, 0.2);
+        }
+
+        .flow-node:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 25px rgba(0, 180, 255, 0.4);
+            border-color: #00ffff;
+        }
+
+        .flow-node.active {
+            border-color: #00ff66;
+            box-shadow: 0 0 20px rgba(0, 255, 102, 0.4);
+        }
+
+        .flow-node.warning {
+            border-color: #ff6600;
+            background: rgba(100, 50, 20, 0.85);
+            box-shadow: 0 0 15px rgba(255, 102, 0, 0.3);
+        }
+
+        .flow-node.danger {
+            border-color: #ff0000;
+            background: rgba(80, 20, 20, 0.85);
+            box-shadow: 0 0 15px rgba(255, 0, 0, 0.3);
+        }
+
+        .flow-node.success {
+            border-color: #00ff66;
+            background: rgba(20, 80, 40, 0.85);
+            box-shadow: 0 0 15px rgba(0, 255, 102, 0.3);
+        }
+
+        .flow-node.control {
+            border-radius: 50%;
+            width: 100px;
+            height: 100px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 10px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        .flow-node.control:hover {
+            transform: scale(1.1);
+        }
+
+        .flow-node .title {
+            font-size: 16px;
+            font-weight: bold;
+            color: #aaffff;
+            margin-bottom: 6px;
+        }
+
+        .flow-node .desc {
+            font-size: 12px;
+            color: #66cccc;
+            line-height: 1.4;
+        }
+
+        .flow-arrow {
+            width: 40px;
+            height: 2px;
+            background: linear-gradient(90deg, #44aacc, #00ffff);
+            position: relative;
+        }
+
+        .flow-arrow::after {
+            content: '';
+            position: absolute;
+            right: -6px;
+            top: -4px;
+            width: 0;
+            height: 0;
+            border-top: 6px solid transparent;
+            border-bottom: 6px solid transparent;
+            border-left: 8px solid #00ffff;
+        }
+
+        .flow-arrow.down {
+            width: 2px;
+            height: 40px;
+            background: linear-gradient(180deg, #44aacc, #00ffff);
+        }
+
+        .flow-arrow.down::after {
+            content: '';
+            position: absolute;
+            bottom: -6px;
+            left: -4px;
+            width: 0;
+            height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-top: 8px solid #00ffff;
+        }
+
+        .arrow-container {
+            display: flex;
+            justify-content: center;
+            height: 50px;
+            align-items: center;
+        }
+
+        .branch-container {
+            display: flex;
+            justify-content: center;
+            gap: 60px;
+        }
+
+        .branch-label {
+            font-size: 12px;
+            color: #66cccc;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: bold;
+            color: #00ffcc;
+            margin: 40px 0 20px 0;
+            padding-left: 20px;
+            border-left: 4px solid #00ffcc;
+        }
+
+        .legend {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 40px;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 13px;
+            color: #66cccc;
+        }
+
+        .legend-box {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+        }
+
+        .legend-box.normal { border: 2px solid #44aacc; background: rgba(26, 74, 94, 0.85); }
+        .legend-box.active { border: 2px solid #00ff66; background: rgba(20, 80, 40, 0.85); }
+        .legend-box.warning { border: 2px solid #ff6600; background: rgba(100, 50, 20, 0.85); }
+        .legend-box.danger { border: 2px solid #ff0000; background: rgba(80, 20, 20, 0.85); }
+
+        .highlight-box {
+            background: rgba(0, 180, 255, 0.1);
+            border: 1px dashed #44aacc;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+
+        .highlight-box h3 {
+            color: #00ffff;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        .highlight-box p {
+            color: #66cccc;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .interactive-note {
+            text-align: center;
+            font-size: 12px;
+            color: #446677;
+            margin-top: 20px;
+        }
+
+        /* 响应式设计 */
+        @media (max-width: 768px) {
+            body {
+                padding: 20px 10px;
+            }
+
+            h1 {
+                font-size: 22px;
+            }
+
+            .flow-node {
+                min-width: 140px;
+                padding: 12px 16px;
+            }
+
+            .flow-node.control {
+                width: 80px;
+                height: 80px;
+                font-size: 12px;
+            }
+
+            .branch-container {
+                gap: 30px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>✈️ 飞行数据项目使用流程图</h1>
+
+        <!-- 主流程 -->
+        <div class="section-title">启动与电源控制</div>
+        <div class="flowchart">
+            <div class="flow-row">
+                <div class="flow-node success">
+                    <div class="title">启动应用</div>
+                    <div class="desc">运行 dyq3.exe</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node">
+                    <div class="title">界面初始化</div>
+                    <div class="desc">显示飞行数据主窗口</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node control">
+                    <div class="title" style="color: #44aacc;">电源</div>
+                    <div class="desc" style="color: #66cccc;">点击开机</div>
+                </div>
+            </div>
+
+            <div class="arrow-container">
+                <div class="flow-arrow down"></div>
+            </div>
+
+            <div class="branch-container">
+                <div style="display: flex; flex-direction: column; align-items: center;">
+                    <div class="branch-label">电源开启</div>
+                    <div class="flow-node active">
+                        <div class="title">开机成功</div>
+                        <div class="desc">获取定位信息<br>初始化飞行数据</div>
+                    </div>
+                </div>
+                <div style="display: flex; flex-direction: column; align-items: center;">
+                    <div class="branch-label">电源关闭</div>
+                    <div class="flow-node">
+                        <div class="title">关机状态</div>
+                        <div class="desc">数据保持显示<br>可执行归还/换能源</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 飞行控制流程 -->
+        <div class="section-title">飞行控制流程（互斥）</div>
+        <div class="flowchart">
+            <div class="flow-row">
+                <div class="flow-node active">
+                    <div class="title">电源已开启</div>
+                    <div class="desc">isPowerOn = true</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node control">
+                    <div class="title" style="color: #0088ff;">起飞</div>
+                    <div class="desc" style="color: #66cccc;">点击起飞</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node warning">
+                    <div class="title">重量检查</div>
+                    <div class="desc">>80kg 禁止起飞<br>弹出警告弹窗</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node active">
+                    <div class="title">起飞成功</div>
+                    <div class="desc">数据更新定时器启动<br>高度/速度/电量实时更新</div>
+                </div>
+            </div>
+
+            <div class="arrow-container">
+                <div class="flow-arrow down"></div>
+            </div>
+
+            <div class="branch-container">
+                <div style="display: flex; flex-direction: column; align-items: center;">
+                    <div class="branch-label">悬停</div>
+                    <div class="flow-node control" style="border-color: #ff0000;">
+                        <div class="title" style="color: #ff0000;">悬停</div>
+                        <div class="desc" style="color: #66cccc;">数据静止</div>
+                    </div>
+                </div>
+                <div style="display: flex; flex-direction: column; align-items: center;">
+                    <div class="branch-label">降落</div>
+                    <div class="flow-node control" style="border-color: #ffff00;">
+                        <div class="title" style="color: #ffff00;">降落</div>
+                        <div class="desc" style="color: #66cccc;">高度/速度递减</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="arrow-container">
+                <div class="flow-arrow down"></div>
+            </div>
+
+            <div class="flow-row">
+                <div class="flow-node success">
+                    <div class="title">降落完成</div>
+                    <div class="desc">高度/速度归0<br>飞行状态重置</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 灯光控制流程 -->
+        <div class="section-title">灯光控制（互斥）</div>
+        <div class="flowchart">
+            <div class="flow-row">
+                <div class="flow-node">
+                    <div class="title">灯光按钮</div>
+                    <div class="desc">开启/关闭灯光</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node active">
+                    <div class="title">灯光开启</div>
+                    <div class="desc">近光/远光按钮可用</div>
+                </div>
+            </div>
+
+            <div class="arrow-container">
+                <div class="flow-arrow down"></div>
+            </div>
+
+            <div class="branch-container">
+                <div style="display: flex; flex-direction: column; align-items: center;">
+                    <div class="branch-label">近光</div>
+                    <div class="flow-node control" style="width: 70px; height: 50px; border-radius: 25px;">
+                        <div class="title" style="color: #00ff66; font-size: 13px;">近光</div>
+                    </div>
+                </div>
+                <div style="display: flex; flex-direction: column; align-items: center;">
+                    <div class="branch-label">远光</div>
+                    <div class="flow-node control" style="width: 70px; height: 50px; border-radius: 25px;">
+                        <div class="title" style="color: #ffff00; font-size: 13px;">远光</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="highlight-box">
+                <h3>💡 互斥规则</h3>
+                <p>近光和远光互斥：近光开启时远光自动关闭，远光开启时近光自动关闭</p>
+            </div>
+        </div>
+
+        <!-- 目的地与航线流程 -->
+        <div class="section-title">目的地与航线规划</div>
+        <div class="flowchart">
+            <div class="flow-row">
+                <div class="flow-node">
+                    <div class="title">输入目的地</div>
+                    <div class="desc">在目的地输入框输入地址</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node">
+                    <div class="title">更换航线按钮</div>
+                    <div class="desc">点击触发地理编码</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node">
+                    <div class="title">高德地理编码</div>
+                    <div class="desc">获取目的地经纬度</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node">
+                    <div class="title">计算距离</div>
+                    <div class="desc">Haversine公式</div>
+                </div>
+            </div>
+
+            <div class="arrow-container">
+                <div class="flow-arrow down"></div>
+            </div>
+
+            <div class="flow-row">
+                <div class="flow-node active">
+                    <div class="title">显示路线地图</div>
+                    <div class="desc">弹窗显示起点和终点<br>支持缩放/拖动/双击还原</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 其他功能流程 -->
+        <div class="section-title">其他功能</div>
+        <div class="flowchart">
+            <div class="flow-row">
+                <div class="flow-node">
+                    <div class="title">指挥中心</div>
+                    <div class="desc">电源开启后点击<br>显示连接成功提示</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node">
+                    <div class="title">鸣笛</div>
+                    <div class="desc">按压变橙色<br>释放恢复</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node">
+                    <div class="title">能源更换</div>
+                    <div class="desc">电源关闭后执行<br>电量重置为85%</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node">
+                    <div class="title">归还</div>
+                    <div class="desc">电源关闭后执行<br>清除所有数据<br>5秒后恢复</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 快捷按钮控制 -->
+        <div class="section-title">高度/速度快捷按钮</div>
+        <div class="flowchart">
+            <div class="flow-row">
+                <div class="flow-node active">
+                    <div class="title">电源开启</div>
+                    <div class="desc">按钮可用</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node">
+                    <div class="title">高度快捷</div>
+                    <div class="desc">1.5m / 2.0m / 3.0m</div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node">
+                    <div class="title">速度快捷</div>
+                    <div class="desc">5km/h / 10km/h / 20km/h</div>
+                </div>
+            </div>
+
+            <div class="highlight-box">
+                <h3>⚠️ 限制条件</h3>
+                <p>起飞/悬停/降落状态下，高度和速度快捷按钮不可用</p>
+            </div>
+        </div>
+
+        <!-- 图例 -->
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-box normal"></div>
+                <span>正常状态</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-box active"></div>
+                <span>激活/成功</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-box warning"></div>
+                <span>警告/检查</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-box danger"></div>
+                <span>危险/错误</span>
+            </div>
+        </div>
+
+        <p class="interactive-note">提示：将鼠标悬停在流程节点上可查看详细信息</p>
+    </div>
+</body>
+</html>

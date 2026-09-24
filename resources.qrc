@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/">
+        <file>amap.html</file>
+    </qresource>
+</RCC>
